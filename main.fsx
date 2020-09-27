@@ -2,6 +2,8 @@ open System
 open System.Net.Http
 open System.Net.Http.Headers
 open System.Text.Json
+open System.IO
+open System.IO.Compression
 
 let args = Environment.GetCommandLineArgs()
 
@@ -54,15 +56,54 @@ let getKanji () =
 
 let getKanjiByLevel (kanjiList: (int * string) list) (level: int) =
     kanjiList
-    |> List.filter (fun (l, c) -> l <= level)
+    |> List.filter (fun (l, _) -> l <= level)
     |> List.map snd
+
+type Spelling = {
+    IsCommon: bool
+    Text: string
+}
+
+type Word = {
+    Id: string
+    Spellings: Spelling list
+}
+
+let parseSpelling (json: JsonElement) =
+    json.EnumerateArray()
+    |> Seq.toList
+    |> List.map(fun spelling -> {
+        IsCommon = spelling.GetProperty("common").GetBoolean()
+        Text = spelling.GetProperty("text").GetString()
+    })
+
+let parseWord (json: JsonElement) =
+    {
+        Id = json.GetProperty("id").GetString()
+        Spellings = parseSpelling (json.GetProperty("kanji"))
+    }
+
+let loadDict () =
+    async {
+        use zip = ZipFile.OpenRead("jmdict-eng-3.1.0+20200915122254.json.zip")
+        use stream = zip.Entries.[0].Open()
+        use sr = new StreamReader(stream)
+        let! text = sr.ReadToEndAsync() |> Async.AwaitTask
+        let json = JsonDocument.Parse(text)
+        let words =
+            json.RootElement.GetProperty("words").EnumerateArray()
+            |> Seq.toList
+            |> List.map parseWord
+            |> List.filter (fun word -> word.Spellings.Length > 0)
+        return words
+    }
 
 let main =
     async {
         let! allKanji = getKanji ()
         let knownKanji = getKanjiByLevel allKanji level
-        for kanji in knownKanji do
-            printfn "%s" kanji
+        let! dict = loadDict ()
+        printfn "%A" dict
         return ()
     }
 
