@@ -9,7 +9,7 @@ let args = Environment.GetCommandLineArgs()
 
 let level =
     try
-        Int32.Parse args.[2]
+        Int32.Parse args.[3]
     with
     | _ -> failwith "Please pass the level as an argument."
 
@@ -49,12 +49,12 @@ let getKanji () =
             [
                 for data in js do
                     for k in data.EnumerateArray() do
-                        yield k.GetProperty("data").GetProperty("level").GetInt32(), k.GetProperty("data").GetProperty("characters").GetString()
+                        yield k.GetProperty("data").GetProperty("level").GetInt32(), k.GetProperty("data").GetProperty("characters").GetString() |> Convert.ToChar
             ]
         return kanji
     }
 
-let getKanjiByLevel (kanjiList: (int * string) list) (level: int) =
+let getKanjiByLevel (kanjiList: (int * char) list) (level: int) =
     kanjiList
     |> List.filter (fun (l, _) -> l <= level)
     |> List.map snd
@@ -77,10 +77,15 @@ let parseSpelling (json: JsonElement) =
         Text = spelling.GetProperty("text").GetString()
     })
 
+let isKanji (c: char) =
+    c >= '\u4E00' && c <= '\u9FAF'
+
 let parseWord (json: JsonElement) =
     {
         Id = json.GetProperty("id").GetString()
-        Spellings = parseSpelling (json.GetProperty("kanji"))
+        Spellings =
+            parseSpelling (json.GetProperty("kanji"))
+            |> List.filter (fun w -> Seq.exists isKanji w.Text)
     }
 
 let loadDict () =
@@ -98,12 +103,38 @@ let loadDict () =
         return words
     }
 
+let filterSpelling (knownKanji: char Set) (spelling: Spelling) =
+    let spellingKanji =
+        spelling.Text.ToCharArray()
+        |> Array.filter isKanji
+        |> set
+        
+    spellingKanji.IsSubsetOf knownKanji
+
+let chooseWord f (word: Word) =
+    match List.filter f word.Spellings with
+    | [] -> None
+    | s -> Some { word with Spellings = s }
+
 let main =
     async {
         let! allKanji = getKanji ()
-        let knownKanji = getKanjiByLevel allKanji level
+        let knownKanji =
+            getKanjiByLevel allKanji level
+            |> set
         let! dict = loadDict ()
-        printfn "%A" dict
+        let allWords =
+            List.choose (chooseWord (fun s -> filterSpelling knownKanji s)) dict
+            |> List.distinctBy (fun w -> w.Spellings)
+        let commonWords =
+            List.choose (chooseWord (fun s -> s.IsCommon)) allWords
+            |> List.distinctBy (fun w -> w.Spellings)
+        commonWords
+        |> List.iter (fun w ->
+            w.Spellings
+            |> List.map (fun s -> s.Text)
+            |> List.reduce (sprintf "%s | %s")
+            |> printfn "%s")
         return ()
     }
 
