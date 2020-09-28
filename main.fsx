@@ -5,14 +5,6 @@ open System.Text.Json
 open System.IO
 open System.IO.Compression
 
-let args = Environment.GetCommandLineArgs()
-
-let level =
-    try
-        Int32.Parse args.[3]
-    with
-    | _ -> failwith "Please pass the level as an argument."
-
 let wanikaniApiKey = Environment.GetEnvironmentVariable("WANIKANI_API_KEY")
 if String.IsNullOrEmpty wanikaniApiKey then
     failwith "Please define the WANIKANI_API_KEY environment variable."
@@ -116,26 +108,41 @@ let chooseWord f (word: Word) =
     | [] -> None
     | s -> Some { word with Spellings = s }
 
+let getLearnableWords kanji dict level =
+    let knownKanji =
+        getKanjiByLevel kanji level
+        |> set
+    let allWords =
+        List.choose (chooseWord (fun s -> filterSpelling knownKanji s)) dict
+        |> List.distinctBy (fun w -> w.Spellings)
+    let commonWords =
+        List.choose (chooseWord (fun s -> s.IsCommon)) allWords
+        |> List.distinctBy (fun w -> w.Spellings)
+    allWords, commonWords
+
+let wordToString (word: Word) =
+    word.Spellings
+    |> List.map (fun s -> s.Text)
+    |> List.reduce (sprintf "%s, %s")
+
+let writeWords (words: Word list) (path: string) =
+    async {
+        let lines = List.map wordToString words
+        do! File.WriteAllLinesAsync(path, lines) |> Async.AwaitTask
+    }
+
 let main =
     async {
         let! allKanji = getKanji ()
-        let knownKanji =
-            getKanjiByLevel allKanji level
-            |> set
         let! dict = loadDict ()
-        let allWords =
-            List.choose (chooseWord (fun s -> filterSpelling knownKanji s)) dict
-            |> List.distinctBy (fun w -> w.Spellings)
-        let commonWords =
-            List.choose (chooseWord (fun s -> s.IsCommon)) allWords
-            |> List.distinctBy (fun w -> w.Spellings)
-        commonWords
-        |> List.iter (fun w ->
-            w.Spellings
-            |> List.map (fun s -> s.Text)
-            |> List.reduce (sprintf "%s | %s")
-            |> printfn "%s")
-        return ()
+        if Directory.Exists("words") then
+            Directory.Delete("words", true)
+        Directory.CreateDirectory("words/all/") |> ignore
+        Directory.CreateDirectory("words/common/") |> ignore
+        for level in 1..60 do
+            let allWords, commonWords = getLearnableWords allKanji dict level
+            do! writeWords allWords (sprintf "words/all/level-%i" level)
+            do! writeWords commonWords (sprintf "words/common/level-%i" level)
     }
 
 Async.RunSynchronously main
